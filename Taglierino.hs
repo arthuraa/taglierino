@@ -65,6 +65,9 @@ data Options = Options { oPrintHeaders    :: Bool
                        , oOutputFile      :: Maybe String }
   deriving (Eq, Ord, Show)
 
+defaultOptions :: Options
+defaultOptions = Options False False False False False Nothing
+
 data Term = Nonce Nonce
           | Tup [Term]
           | AKey AKey KeyType
@@ -956,4 +959,4 @@ compileWith opts@Options{..} sys =
   maybe (doOutput stdout) (\f -> withFile f WriteMode doOutput) oOutputFile
 
 compile :: System () -> IO ()
-compile = compileWith (Options False False False False False Nothing)
+compile = compileWith defaultOptions
