@@ -26,6 +26,7 @@ import qualified Data.Dequeue as Q
 import qualified Data.PQueue.Prio.Min as PQ
 import Data.Maybe (isJust)
 
+import System.IO
 import Control.Monad (forM, forM_)
 import Control.Monad.Fail
 import Control.Monad.Cont   hiding (fail)
@@ -60,7 +61,8 @@ data Options = Options { oPrintHeaders    :: Bool
                        , oPrintErrors     :: Bool
                        , oPrintMessages   :: Bool
                        , oPrintKnowledge  :: Bool
-                       , oVerboseMessages :: Bool }
+                       , oVerboseMessages :: Bool
+                       , oOutputFile      :: Maybe String }
   deriving (Eq, Ord, Show)
 
 data Term = Nonce Nonce
@@ -905,49 +907,53 @@ honestRange agents =
   $ [pretty (agentLabel a) <> dot <> brackets (pretty $ "0.." ++ show (i-1))
     |(a, i) <- agents]
 
+
+
 compileWith :: Options -> System () -> IO ()
-compileWith opts@Options{..} sys = do
+compileWith opts@Options{..} sys =
   let Program {..}    = runSystem opts sys
-  let compiledAgents  = M.mapWithKey (compileAgent $ M.keys pQueries) pProcs
-  let compiledQueries = M.mapWithKey compileQuery pQueries
-  putStrLn "// Ranges"
-  if oVerboseMessages then do
-    putStr "set TERM = "
-    print $ braces $ cat $ punctuate comma
-      $ map (pretty . LTS.Label . labelOfTerm') $ S.toList pAllowed
-  else do
-    putStrLn $ "range TERM = 0.." ++ show (S.size pAllowed - 1)
-    when oPrintHeaders $ do
-      putStrLn "/* Term codes:"
-      forM_ (zip [0 :: Int ..] $ S.toList pAllowed) $ \(i, m) -> do
-        print $ pretty i <+> align (pretty m)
-      putStrLn "*/"
-  if oVerboseMessages then do
-    putStr "set EVENT = "
-    print $ braces $ cat $ punctuate comma
-      $ map (pretty . LTS.Label . labelOfTerm') $ S.toList pEvents
-  else do
-    putStrLn $ "range EVENT = 0.." ++ show (S.size pEvents - 1)
-    when oPrintHeaders $ do
-      putStrLn "/* Event codes:"
-      forM_ (zip [0 :: Int ..] $ S.toList pEvents) $ \(i, m) -> do
-        print $ pretty i <+> align (pretty m)
-      putStrLn "*/"
-  putStr $ "set HONEST = "
-  print $ honestRange [(a, length ps) | (a, ps) <- M.assocs pProcs]
-  putStrLn "// Honest agents"
-  forM_ compiledAgents $ \(def, threads) -> do
-    forM_ threads (print . pretty)
-    print $ pretty def
-  putStrLn "// Attacker"
-  print $ pretty $ attacker opts pPublic pAllowed pKnowledgeSize
-  print $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ "Attacker" : map (LTS.name . fst) (M.elems compiledAgents)
-  putStrLn "// Properties"
-  forM_ (M.assocs compiledQueries) $ \(i, q) -> do
-    let name = "Query_" ++ i
-    print . pretty $ q
-    print . pretty . LTS.Parallel name . LTS.Forall "e" "EVENT" . LTS.pName $ q
-    print . pretty . LTS.Parallel ("Check_" ++ i) . LTS.Primitive $ ["System", name]
+      compiledAgents  = M.mapWithKey (compileAgent $ M.keys pQueries) pProcs
+      compiledQueries = M.mapWithKey compileQuery pQueries
+      doOutput h = do
+        hPutStrLn h "// Ranges"
+        if oVerboseMessages then do
+          hPutStr h "set TERM = "
+          hPrint h $ braces $ cat $ punctuate comma
+            $ map (pretty . LTS.Label . labelOfTerm') $ S.toList pAllowed
+        else do
+          hPutStrLn h $ "range TERM = 0.." ++ show (S.size pAllowed - 1)
+          when oPrintHeaders $ do
+            hPutStrLn h "/* Term codes:"
+            forM_ (zip [0 :: Int ..] $ S.toList pAllowed) $ \(i, m) -> do
+              hPrint h $ pretty i <+> align (pretty m)
+            hPutStrLn h "*/"
+        if oVerboseMessages then do
+          hPutStr h "set EVENT = "
+          hPrint h $ braces $ cat $ punctuate comma
+            $ map (pretty . LTS.Label . labelOfTerm') $ S.toList pEvents
+        else do
+          hPutStrLn h $ "range EVENT = 0.." ++ show (S.size pEvents - 1)
+          when oPrintHeaders $ do
+            hPutStrLn h "/* Event codes:"
+            forM_ (zip [0 :: Int ..] $ S.toList pEvents) $ \(i, m) -> do
+              hPrint h $ pretty i <+> align (pretty m)
+            hPutStrLn h "*/"
+        hPutStr h $ "set HONEST = "
+        hPrint h $ honestRange [(a, length ps) | (a, ps) <- M.assocs pProcs]
+        hPutStrLn h "// Honest agents"
+        forM_ compiledAgents $ \(def, threads) -> do
+          forM_ threads (hPrint h . pretty)
+          hPrint h $ pretty def
+        hPutStrLn h "// Attacker"
+        hPrint h $ pretty $ attacker opts pPublic pAllowed pKnowledgeSize
+        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ "Attacker" : map (LTS.name . fst) (M.elems compiledAgents)
+        hPutStrLn h "// Properties"
+        forM_ (M.assocs compiledQueries) $ \(i, q) -> do
+          let name = "Query_" ++ i
+          hPrint h . pretty $ q
+          hPrint h . pretty . LTS.Parallel name . LTS.Forall "e" "EVENT" . LTS.pName $ q
+          hPrint h . pretty . LTS.Parallel ("Check_" ++ i) . LTS.Primitive $ ["System", name] in
+  maybe (doOutput stdout) (\f -> withFile f WriteMode doOutput) oOutputFile
 
 compile :: System () -> IO ()
-compile = compileWith (Options False False False False False)
+compile = compileWith (Options False False False False False Nothing)
