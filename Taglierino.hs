@@ -24,7 +24,7 @@ import qualified Data.MultiSet as MS
 import Data.Text.Prettyprint.Doc
 import qualified Data.Dequeue as Q
 import qualified Data.PQueue.Prio.Min as PQ
-import Data.Maybe (isJust, fromJust)
+import Data.Maybe (isJust)
 
 import System.IO
 import Control.Monad (forM, forM_)
@@ -150,7 +150,7 @@ reservedNames =
 
 reservedPrefixes :: [String]
 reservedPrefixes =
-  ["Def_", "Check_"]
+  ["Def_", "Check_", "Store_"]
 
 mkAgent :: String -> Agent
 mkAgent [] = error "Agent name cannot be empty"
@@ -345,46 +345,25 @@ receive = do
       return $ LTS.Action l body
     return $ LTS.Body actions
 
-insertL :: [LTS.LabelPart] -> LTS.Label
-insertL args = LTS.Label $ [LTS.Simple "insert"] ++ args
+insertFreshL :: [LTS.LabelPart] -> LTS.Label
+insertFreshL args = LTS.Label $ [LTS.Simple "insertfresh"] ++ args
 
-insert :: Term -> Proc ()
-insert m = do
+insertFresh :: Term -> Proc Bool
+insertFresh r = do
   ProcRState{..} <- ask
-  case S.lookupIndex m psAllowed of
-    Just mi ->
-      action $ insertL $ [agentLabel psAgent, LTS.const psThread]
-      ++ labelOfTerm psOptions m mi
-    Nothing -> fail $ show $ pretty "Not allowed to insert" <+> pretty m
-
-getL :: [LTS.LabelPart] -> LTS.Label
-getL args = LTS.Label $ [LTS.Simple "get"] ++ args
-
-lookupL :: [LTS.LabelPart] -> LTS.Label
-lookupL args = LTS.Label $ [LTS.Simple "lookup"] ++ args
-
-lookup' :: Term -> Proc ()
-lookup' m = do
-  ProcRState{..} <- ask
-  case S.lookupIndex m psAllowed of
-    Just mi ->
-      action $ lookupL $ [agentLabel psAgent, LTS.const psThread]
-      ++ labelOfTerm psOptions m mi
-    Nothing -> fail $ show $ pretty "Not allowed to lookup " <+> pretty m <+> pretty " in " <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
-
-lookup :: Term -> Proc Bool
-lookup m = do
-  lookup' m
-  ProcRState{..} <- ask
-  Proc $ ContT $ \k -> do
-    s <- get
-    actions <- forM [True, False] $ \m -> do
-      put s
-      body <- k m
-      let mm = if m then "true" else "false"
-      let l = getL $ [agentLabel psAgent, LTS.const psThread, LTS.Simple mm]
-      return $ LTS.Action l body
-    return $ LTS.Body actions
+  case S.lookupIndex r psAllowed of
+    Just mi -> 
+      Proc $ ContT $ \k -> do
+        s <- get
+        actions <- forM [True, False] $ \m -> do
+          put s
+          body <- k m
+          let mm = if m then "true" else "false"
+          let l = insertFreshL $ [agentLabel psAgent, LTS.const psThread] ++
+                  labelOfTerm psOptions r mi ++ [LTS.Simple mm]
+          return $ LTS.Action l body
+        return $ LTS.Body actions
+    Nothing -> fail $ show $ pretty "Not allowed to insertfresh" <+> pretty r <+> pretty " in " <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
 
 aenc :: Term -> Term -> Term
 aenc (AKey k Public) m = AEnc k m
@@ -912,8 +891,8 @@ attacker opts@Options{..} public allowed k =
 threadName :: Agent -> Int -> String
 threadName a id = "Def_Agent_" ++ agentName a ++ "_" ++ show id
 
-compileThread :: M.Map Agent [LTS.Body] -> M.Map String (S.Set Term) -> S.Set Term -> [EventId] -> Agent -> Int -> LTS.Body -> LTS.Process
-compileThread procs stores allowed queries a id body =
+compileThread :: M.Map String (S.Set Term) -> S.Set Term -> [EventId] -> Agent -> Int -> LTS.Body -> LTS.Process
+compileThread stores allowed queries a id body =
   LTS.Process { pName = threadName a id
               , pParam = Nothing
               , pProperty = False
@@ -929,17 +908,11 @@ compileThread procs stores allowed queries a id body =
               }
 
 
-compileAgent :: M.Map Agent [LTS.Body] -> M.Map String (S.Set Term) -> S.Set Term -> [EventId] -> Agent -> [LTS.Body] -> (LTS.Parallel, [LTS.Process])
-compileAgent procs stores allowed queries a bodies =
-  let threads  = zipWith (compileThread procs stores allowed queries a) [0 ..] bodies
+compileAgent :: M.Map String (S.Set Term) -> S.Set Term -> [EventId] -> Agent -> [LTS.Body] -> (LTS.Parallel, [LTS.Process])
+compileAgent stores allowed queries a bodies =
+  let threads  = zipWith (compileThread stores allowed queries a) [0 ..] bodies
       compose  = LTS.Parallel (agentName a) $ LTS.Primitive $ map LTS.pName threads in
     (compose, threads)
-
--- compileAgent :: [EventId] -> Agent -> [LTS.Body] -> (LTS.Parallel, [LTS.Process])
--- compileAgent queries a bodies =
---   let threads  = zipWith (compileThread queries a) [0 ..] bodies
---       compose  = LTS.Parallel (agentName a) $ LTS.Primitive $ map LTS.pName threads in
---     (compose, threads)
 
 compileQuery :: EventId -> Query -> LTS.Process
 compileQuery id q =
@@ -974,7 +947,7 @@ honestRange agents =
 
 makeStore :: Set Term -> Set Term -> String -> Int -> LTS.Process
 makeStore allowed records agentName sessions= 
-  LTS.Process (agentName++ "_Store") Nothing False initialState body alphabet
+  LTS.Process ("Store_" ++ agentName) Nothing False initialState body alphabet
   where 
     combinations :: Int -> [a] -> [[a]]
     combinations 0 _ = [[]]
@@ -1008,40 +981,32 @@ makeStore allowed records agentName sessions=
     serializeRecords :: Term -> Int
     serializeRecords r = S.findIndex r allowed 
 
-    getTrue :: LTS.Body -> Int -> LTS.Body
-    getTrue next n = LTS.Body [LTS.Action (getL $ [LTS.Simple name] ++ [LTS.Variable (show n)] ++ [LTS.Simple "true"]) next] 
-
-    getFalse :: LTS.Body -> Int -> LTS.Body
-    getFalse next n = LTS.Body $ [LTS.Action (getL $ [LTS.Simple name] ++ [LTS.Variable (show n)] ++ [LTS.Simple "false"]) next] 
-
-    lookups :: S.Set Term -> Int -> [LTS.Action]
-    lookups s n =
+    oneState :: S.Set Term -> [Int] -> [LTS.Action]
+    oneState s ns =
       let  rest = S.difference records s
-           fs = (\x -> LTS.Label [LTS.Variable (show (serializeRecords x))]) <$> S.toList rest
-           ts = (\x -> LTS.Label [LTS.Variable (show (serializeRecords x))]) <$> S.toList s
-           currS = stateLookup s
-           action1 = if S.null rest then [] else [LTS.Action (lookupL $ [LTS.Simple name] ++ [LTS.Variable (show n)] ++ [LTS.Set fs]) (getFalse currS n)] 
-           action2 = if S.null s then [] else [LTS.Action (lookupL $ [LTS.Simple name] ++ [LTS.Variable (show n)] ++ [LTS.Set ts]) (getTrue currS n)] 
-      in   action1 ++ action2
-
-    inserts :: S.Set Term -> Int -> [LTS.Action]
-    inserts s n = 
-      let rest = S.difference records s
-          inserts' m = LTS.Action (insertL $ [LTS.Simple name] ++ [LTS.Variable (show n)] ++ [LTS.Variable (show (serializeRecords m))]) (stateLookup (s `S.union` (S.singleton m)))
-          insLoop m = LTS.Action (insertL $ [LTS.Simple name] ++ [LTS.Variable (show n)] ++ [LTS.Variable (show (serializeRecords m))]) (stateLookup s)
-      in  (inserts' <$> S.toList rest) ++ (insLoop <$> S.toList s) 
+           ss = (\x -> LTS.Label [LTS.Variable (show x)]) <$> ns
+           actionT m = LTS.Action (insertFreshL$ [LTS.Simple name, LTS.Set ss, LTS.Variable (show (serializeRecords m)), LTS.Simple "true"]) (stateLookup (s `S.union` (S.singleton m)))
+           fs = (\x -> LTS.Label [LTS.Variable (show (serializeRecords x))]) <$> S.toList s
+           actionF = if S.null s then [] else [LTS.Action (insertFreshL $ [LTS.Simple name, LTS.Set ss, LTS.Set fs, LTS.Simple "false"]) (stateLookup s)] 
+      in   actionF ++ (actionT <$> S.toList rest)
 
     makeBody :: [S.Set Term] -> [Int] -> [(String, (Maybe String, LTS.Body))]
     makeBody [] _ = []
-    makeBody (x:xs) ns = (stateLookup' x, (Nothing, LTS.Body (lus ++ ins))) : makeBody xs ns
-      where lus = foldl (\acc n -> acc ++ (lookups x n)) [] ns 
-            ins = foldl (\acc n -> acc ++ (inserts x n)) [] ns 
+    makeBody (x:xs) ns = (stateLookup' x, (Nothing, LTS.Body (oneState x ns))) : makeBody xs ns
     
     body = M.fromList $ makeBody entries range
 
-    alphabet = [getL [LTS.Simple name, LTS.Variable (show n), LTS.Simple s] | n <- range, s <- ["true", "false"]] ++ 
-               [insertL [LTS.Simple name, LTS.Variable (show n), LTS.Variable (show (serializeRecords m))] | n <- range, m <- S.toList records] ++
-               [lookupL [LTS.Simple name, LTS.Variable (show n), LTS.Variable (show (serializeRecords m))] | n <- range, m <- S.toList records]
+    alphabet =
+      [ insertFreshL
+        [ LTS.Simple name
+        , LTS.Variable (show n)
+        , LTS.Variable (show (serializeRecords m))
+        , LTS.Simple r
+        ]
+      | n <- range
+      , m <- S.toList records
+      , r <- ["true", "false"]
+      ]
 
 numInstance :: String -> M.Map Agent [LTS.Body] -> Int 
 numInstance name procs = 
@@ -1051,17 +1016,24 @@ numInstance name procs =
 
 storeAlphabet :: Agent -> M.Map String (S.Set Term) -> S.Set Term -> Int -> [LTS.Label]
 storeAlphabet (Agent agentName) nameToRecords allowed n =
-  case M.lookup agentName nameToRecords of 
-    Just records -> let name = map toLower agentName
-                    in  [getL [LTS.Simple name, LTS.Variable (show n), LTS.Simple s] | s <- ["true", "false"]] ++ 
-                        [insertL [LTS.Simple name, LTS.Variable (show n), LTS.Variable (show (S.findIndex m allowed))] | m <- S.toList records] ++
-                        [lookupL [LTS.Simple name, LTS.Variable (show n), LTS.Variable (show (S.findIndex m allowed))] | m <- S.toList records]
+  case M.lookup agentName nameToRecords of
+    Just records ->
+      let name = map toLower agentName
+       in [ insertFreshL
+            [ LTS.Simple name
+            , LTS.Variable (show n)
+            , LTS.Variable (show (S.findIndex m allowed))
+            , LTS.Simple result
+            ]
+          | m <- S.toList records
+          , result <- ["true", "false"]
+          ]
     Nothing -> []
 
 compileWith :: Options -> System () -> IO ()
 compileWith opts@Options{..} sys =
   let Program {..}    = runSystem opts sys
-      compiledAgents  = M.mapWithKey (compileAgent pProcs pStore pAllowed $ M.keys pQueries) pProcs
+      compiledAgents  = M.mapWithKey (compileAgent pStore pAllowed $ M.keys pQueries) pProcs
       compiledQueries = M.mapWithKey compileQuery pQueries
       doOutput h = do
         hPutStrLn h "// Ranges"
@@ -1095,11 +1067,9 @@ compileWith opts@Options{..} sys =
           hPrint h $ pretty def
         hPutStrLn h "// Attacker"
         hPrint h $ pretty $ attacker opts pPublic pAllowed pKnowledgeSize
-        --- 
         hPutStrLn h "// Storages"
         forM_ (M.toList pStore) (\(name, records)-> hPrint h $ pretty $ makeStore pAllowed records name (numInstance name pProcs)) 
-        ---
-        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ ("Attacker" : map (LTS.name . fst) (M.elems compiledAgents)) ++ map (++ "_Store") (M.keys pStore)
+        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ ("Attacker" : map (LTS.name . fst) (M.elems compiledAgents)) ++ map ("Store_" ++) (M.keys pStore)
         hPutStrLn h "// Properties"
         forM_ (M.assocs compiledQueries) $ \(i, q) -> do
           let name = "Query_" ++ i
