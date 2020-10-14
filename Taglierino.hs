@@ -363,7 +363,10 @@ insertFresh r = do
                   labelOfTerm psOptions r mi ++ [LTS.Simple mm]
           return $ LTS.Action l body
         return $ LTS.Body actions
-    Nothing -> fail $ show $ pretty "Not allowed to insertfresh" <+> pretty r <+> pretty " in " <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
+    Nothing -> fail $ show $ pretty "Not allowed to insertfresh"
+               <+> pretty r
+               <+> pretty " in "
+               <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
 
 aenc :: Term -> Term -> Term
 aenc (AKey k Public) m = AEnc k m
@@ -987,12 +990,21 @@ makeStore allowed records agentName sessions=
 
     oneState :: S.Set Term -> [Int] -> [LTS.Action]
     oneState s ns =
-      let  rest = S.difference records s
-           ss = (\x -> LTS.Label [LTS.Variable (show x)]) <$> ns
-           actionT m = LTS.Action (insertFreshL$ [LTS.Simple name, LTS.Set ss, LTS.Variable (show (serializeRecords m)), LTS.Simple "true"]) (stateLookup (s `S.union` (S.singleton m)))
-           fs = (\x -> LTS.Label [LTS.Variable (show (serializeRecords x))]) <$> S.toList s
-           actionF = if S.null s then [] else [LTS.Action (insertFreshL $ [LTS.Simple name, LTS.Set ss, LTS.Set fs, LTS.Simple "false"]) (stateLookup s)] 
-      in   actionF ++ (actionT <$> S.toList rest)
+      actionF ++ (actionT <$> S.toList rest)
+      where rest = S.difference records s
+            ss = [LTS.Label [LTS.Variable (show x)] | x <- ns]
+            fs = [LTS.Label [LTS.Variable (show (serializeRecords x))] | x <- S.toList s]
+            insertT m = insertFreshL $ [LTS.Simple name,
+                                        LTS.Set ss,
+                                        LTS.Variable (show (serializeRecords m)),
+                                        LTS.Simple "true"] 
+            insertF = [LTS.Action (insertFreshL $ [LTS.Simple name,
+                                                   LTS.Set ss,
+                                                   LTS.Set fs,
+                                                   LTS.Simple "false"])
+                        (stateLookup s)] 
+            actionT m = LTS.Action (insertT m) (stateLookup (s `S.union` (S.singleton m)))
+            actionF = if S.null s then [] else insertF
 
     makeBody :: [S.Set Term] -> [Int] -> [(String, (Maybe String, LTS.Body))]
     makeBody [] _ = []
@@ -1073,7 +1085,9 @@ compileWith opts@Options{..} sys =
         hPrint h $ pretty $ attacker opts pPublic pAllowed pKnowledgeSize
         hPutStrLn h "// Storages"
         forM_ (M.toList pStore) (\(name, records)-> hPrint h $ pretty $ makeStore pAllowed records name (numInstance name pProcs)) 
-        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ ("Attacker" : map (LTS.name . fst) (M.elems compiledAgents)) ++ map ("Store_" ++) (M.keys pStore)
+        let storesNames = map ("Store_" ++) (M.keys pStore)
+        let agentsNames = map (LTS.name . fst) (M.elems compiledAgents)
+        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ ("Attacker" : agentsNames) ++ storesNames
         hPutStrLn h "// Properties"
         forM_ (M.assocs compiledQueries) $ \(i, q) -> do
           let name = "Query_" ++ i
