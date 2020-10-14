@@ -958,6 +958,10 @@ makeStore allowed records agentName sessions=
       where len = length l
             result = map (`combinations`  l) [0.. len]
 
+    -- turn off for now to keep the generated model the same 
+    -- allComb :: Ord a => [a] -> [S.Set a]
+    -- allComb = S.toList . S.powerSet . S.fromList 
+
     entries :: [S.Set Term]
     entries = allComb $ S.toList records
 
