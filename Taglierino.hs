@@ -198,7 +198,6 @@ data Term = Nonce Nonce
           | Const Const
           | Exp (MS.MultiSet Term)
           | Hash Term
-          | Xor (Set Term)
           | AEAD Term Term Term Term
           | Garbage
   deriving (Eq, Ord, Show)
@@ -232,9 +231,6 @@ labelOfTerm' t = go t
                                    | (t, i) <- occurrences ex])
                         ++ [LTS.Simple "dot"]
         go (Hash t)   = [LTS.Simple "hash"] ++ go t
-        go (Xor ts)   = [LTS.Simple "xor"]
-                        ++ concat (intersperse [LTS.Simple "comma"] $ map go $ S.toList ts)
-                        ++ [LTS.Simple "dot"]
         go (AEAD t1 t2 t3 t4) = [LTS.Simple "aead"]
                                 ++ concat (intersperse [LTS.Simple "comma"] $ map go [t1, t2, t3, t4])
                                 ++ [LTS.Simple "dot"]
@@ -318,8 +314,6 @@ instance Pretty Term where
   pretty (Const c) = pretty "C" <> pretty c
   pretty (Exp ms) = pretty "Exp" <> parens (prettySum ms)
   pretty (Hash m) = pretty "Hash" <> braces (pretty m) 
-  pretty (Xor ms) =
-    encloseSep (pretty "(") (pretty ")") (pretty "(+)") $ map pretty $ S.toList ms
   pretty (AEAD m1 m2 m3 m4) = pretty "AEAD" <> pretty (Tup [m1, m2, m3, m4])
   pretty Garbage = pretty "Garbage"
 
@@ -650,26 +644,6 @@ hkdf_expand prk info l ipad opad =
         let tup5 = Tup [ tup1, inner] in
           Hash tup5
 
-xorSet :: S.Set Term -> Term
-xorSet ms
-  | S.size ms == 1 = S.findMin ms
-  | otherwise      = Xor ms
-
-xor :: Term -> Term -> Term
-xor (Xor ms1) (Xor ms2) =
-  let u   = S.union ms1 ms2
-      i   = S.intersection ms1 ms2 in
-    xorSet $ S.difference u i
-xor (Xor ms1) m2
-  | S.member m2 ms1 = xorSet $ S.delete m2 ms1
-  | otherwise       = xorSet $ S.insert m2 ms1
-xor m1 (Xor ms2)
-  | S.member m1 ms2 = xorSet $ S.delete m1 ms2
-  | otherwise       = xorSet $ S.insert m1 ms2
-xor m1 m2
-  | m1 == m2  = Xor S.empty
-  | otherwise = Xor $ S.fromList [m1, m2]
-
 aead_enc :: Term -> Term -> Term -> Term -> Term
 aead_enc m1 m2 m3 m4 = AEAD m1 m2 m3 m4
 
@@ -899,7 +873,6 @@ elementary (SEnc _ _)      = False
 elementary (Const _)       = True
 elementary (Exp _)         = False
 elementary (Hash _)        = False
-elementary (Xor _)         = False
 elementary (AEAD _ _ _ _)  = False
 elementary Garbage         = False
 
@@ -986,12 +959,6 @@ knows (Exp ms) knw =
     isJust $ factorMultiSet (exps ++ singles) ms
 knows m@(Hash m') knw =
   kmember m knw || knows m' knw
-knows (Xor ms) knw =
-  -- TODO: This check is very incomplete.  We would need to solve a linear
-  -- system to make this work in full generality
-  -- TODO: What if ms' is a singleton?
-  let ms' = S.filter (\m -> not $ knows m knw) ms in
-    length ms' == 0 || kmember (Xor ms') knw
 knows (AEAD m1 m2 m3 m4) knw =
   -- TODO: Can we simplify this?
   kmember (AEAD m1 m2 m3 m4) knw
@@ -1029,7 +996,6 @@ extractKnowledge m@(SEnc k m') knw =
     kunion knw1 knw2
 extractKnowledge m@(Exp _) knw = extractKnowledge1 m knw
 extractKnowledge m@(Hash _) knw = extractKnowledge1 m knw
-extractKnowledge m@(Xor _) knw = extractKnowledge1 m knw -- TODO: Incomplete
 extractKnowledge m@(AEAD m1 m2 m3 m4) knw =
   let knw1 = extractKnowledge1 m knw
       knw2 = if all (flip knows knw) [m1, m2, m4] then extractKnowledge m3 knw
