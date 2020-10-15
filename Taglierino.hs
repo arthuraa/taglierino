@@ -779,19 +779,23 @@ query id q = do
 
 -- | Declare a non-injective query
 nonInjective :: EventId -- ^ The identifier of the event
-             -> Agent   -- ^ The agent that triggers begin
-             -> Agent   -- ^ The agent that triggers end
+             -> String  -- ^ The agent that triggers begin
+             -> String  -- ^ The agent that triggers end
              -> System ()
 nonInjective id qBegin qEnd =
-  query id Query{ qProp = NonInjective, .. }
+  query id Query{ qProp = NonInjective
+                , qBegin = mkAgent qBegin
+                , qEnd = mkAgent qEnd }
 
 -- | Declare an injective query
 injective :: EventId -- ^ The identifier of the event
-          -> Agent   -- ^ The agent that triggers begin
-          -> Agent   -- ^ The agent that triggers end
+          -> String  -- ^ The agent that triggers begin
+          -> String  -- ^ The agent that triggers end
           -> System ()
 injective id qBegin qEnd =
-  query id Query{ qProp = Injective, .. }
+  query id Query{ qProp = Injective
+                , qBegin = mkAgent qBegin
+                , qEnd = mkAgent qEnd }
 
 -- | Allow all terms in the list to be exchanged in the network.
 allow :: [Term] -> System ()
