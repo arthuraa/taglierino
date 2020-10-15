@@ -17,7 +17,7 @@ import qualified Prelude
 
 import Data.Foldable
 import Data.Char
-import Data.List (intersperse)
+import Data.List (intersperse, tails)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import qualified Data.MultiSet as MS
@@ -150,7 +150,7 @@ reservedNames =
 
 reservedPrefixes :: [String]
 reservedPrefixes =
-  ["Def_", "Check_"]
+  ["Def_", "Check_", "Store_"]
 
 mkAgent :: String -> Agent
 mkAgent [] = error "Agent name cannot be empty"
@@ -345,6 +345,29 @@ receive = do
       return $ LTS.Action l body
     return $ LTS.Body actions
 
+insertFreshL :: [LTS.LabelPart] -> LTS.Label
+insertFreshL args = LTS.Label $ [LTS.Simple "insertfresh"] ++ args
+
+insertFresh :: Term -> Proc Bool
+insertFresh r = do
+  ProcRState{..} <- ask
+  case S.lookupIndex r psAllowed of
+    Just mi -> 
+      Proc $ ContT $ \k -> do
+        s <- get
+        actions <- forM [True, False] $ \m -> do
+          put s
+          body <- k m
+          let mm = if m then "true" else "false"
+          let l = insertFreshL $ [agentLabel psAgent, LTS.const psThread] ++
+                  labelOfTerm psOptions r mi ++ [LTS.Simple mm]
+          return $ LTS.Action l body
+        return $ LTS.Body actions
+    Nothing -> fail $ show $ pretty "Not allowed to insertfresh"
+               <+> pretty r
+               <+> pretty " in "
+               <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
+
 aenc :: Term -> Term -> Term
 aenc (AKey k Public) m = AEnc k m
 aenc _ _ = Garbage
@@ -482,6 +505,7 @@ data SystemState = SystemState { sAgents :: Int
                                , sEvents  :: S.Set Term
                                , sAllowed :: S.Set Term
                                , sPublic  :: S.Set Term
+                               , sStore   :: M.Map String (S.Set Term)
                                , sKnowledgeSize :: Int
                                , sOptions :: Options
                                , sProcs   :: M.Map Agent (Queue (Proc ()))
@@ -555,6 +579,17 @@ public iks = do
   SystemState {..} <- get
   put $ SystemState {sPublic = sPublic `S.union` S.fromList iks, ..}
 
+store :: String -> [Term] -> System ()
+store name rs = do
+  SystemState {..} <- get
+  case M.lookup name sStore of
+    Just terms ->
+      put $
+      SystemState
+        {sStore = M.insert name (terms `S.union` S.fromList rs) sStore, ..}
+    Nothing ->
+      put $ SystemState {sStore = M.insert name (S.fromList rs) sStore, ..}
+
 knowledgeSize :: Int -> System ()
 knowledgeSize k = do
   SystemState{..} <- get
@@ -571,6 +606,7 @@ data Program =
   Program { pEvents        :: S.Set Term
           , pAllowed       :: S.Set Term
           , pPublic        :: S.Set Term
+          , pStore         :: M.Map String (S.Set Term) 
           , pKnowledgeSize :: Int
           , pQueries       :: Map EventId Query
           , pProcs         :: M.Map Agent [LTS.Body] }
@@ -586,6 +622,7 @@ runSystem opts (System f) =
                                  , sEvents  = S.empty
                                  , sAllowed = S.empty
                                  , sPublic  = S.empty
+                                 , sStore  = M.empty
                                  , sKnowledgeSize = 0
                                  , sOptions = opts
                                  , sProcs   = M.empty
@@ -593,7 +630,7 @@ runSystem opts (System f) =
       ((), SystemState {..}) = runState f initialState
       run a id p = runProc p sAllowed sEvents a id opts
       procs = M.mapWithKey (\a ps -> zipWith (run a) [0 ..] $ toList ps) sProcs in
-    Program sEvents sAllowed sPublic sKnowledgeSize sQueries procs
+    Program sEvents sAllowed sPublic sStore sKnowledgeSize sQueries procs
 
 -- | Elementary messages are those that cannot be further decomposed by the
 -- attacker.  Once the attacker knows an elementary message, we can keep this
@@ -857,8 +894,8 @@ attacker opts@Options{..} public allowed k =
 threadName :: Agent -> Int -> String
 threadName a id = "Def_Agent_" ++ agentName a ++ "_" ++ show id
 
-compileThread :: [EventId] -> Agent -> Int -> LTS.Body -> LTS.Process
-compileThread queries a id body =
+compileThread :: M.Map String (S.Set Term) -> S.Set Term -> [EventId] -> Agent -> Int -> LTS.Body -> LTS.Process
+compileThread stores allowed queries a id body =
   LTS.Process { pName = threadName a id
               , pParam = Nothing
               , pProperty = False
@@ -869,13 +906,14 @@ compileThread queries a id body =
                             [ beginL q [agentLabel a, LTS.const id, LTS.Anon "EVENT"]
                             | q <- queries ] ++
                             [ endL q [agentLabel a, LTS.const id, LTS.Anon "EVENT"]
-                            | q <- queries ]
+                            | q <- queries ] ++ 
+                            storeAlphabet a stores allowed id 
               }
 
 
-compileAgent :: [EventId] -> Agent -> [LTS.Body] -> (LTS.Parallel, [LTS.Process])
-compileAgent queries a bodies =
-  let threads  = zipWith (compileThread queries a) [0 ..] bodies
+compileAgent :: M.Map String (S.Set Term) -> S.Set Term -> [EventId] -> Agent -> [LTS.Body] -> (LTS.Parallel, [LTS.Process])
+compileAgent stores allowed queries a bodies =
+  let threads  = zipWith (compileThread stores allowed queries a) [0 ..] bodies
       compose  = LTS.Parallel (agentName a) $ LTS.Primitive $ map LTS.pName threads in
     (compose, threads)
 
@@ -910,12 +948,108 @@ honestRange agents =
   $ [pretty (agentLabel a) <> dot <> brackets (pretty $ "0.." ++ show (i-1))
     |(a, i) <- agents]
 
+makeStore :: Set Term -> Set Term -> String -> Int -> LTS.Process
+makeStore allowed records agentName sessions= 
+  LTS.Process ("Store_" ++ agentName) Nothing False initialState body alphabet
+  where 
+    combinations :: Int -> [a] -> [[a]]
+    combinations 0 _ = [[]]
+    combinations n xs = [y : ys | y:xs' <- tails xs, ys <- combinations (n - 1) xs']
+    
+    allComb :: Ord a => [a] -> [S.Set a]
+    allComb l = map S.fromList $ concat result
+      where len = length l
+            result = map (`combinations`  l) [0.. len]
 
+    -- turn off for now to keep the generated model the same 
+    -- allComb :: Ord a => [a] -> [S.Set a]
+    -- allComb = S.toList . S.powerSet . S.fromList 
+
+    entries :: [S.Set Term]
+    entries = allComb $ S.toList records
+
+    name :: String
+    name = map toLower agentName
+
+    range :: [Int]
+    range = [0..sessions-1]
+
+    tableBody :: M.Map (S.Set Term) Int
+    tableBody = M.fromList $ zip entries [0..]
+  
+    stateLookup :: S.Set Term -> LTS.Body
+    stateLookup entry = LTS.Name (LTS.Id $ stateLookup' entry)
+
+    stateLookup' :: S.Set Term -> String
+    stateLookup' entry = "Q" ++ (show (tableBody M.! entry))
+
+    initialState = stateLookup []
+
+    serializeRecords :: Term -> Int
+    serializeRecords r = S.findIndex r allowed 
+
+    oneState :: S.Set Term -> [Int] -> [LTS.Action]
+    oneState s ns =
+      actionF ++ (actionT <$> S.toList rest)
+      where rest = S.difference records s
+            ss = [LTS.Label [LTS.Variable (show x)] | x <- ns]
+            fs = [LTS.Label [LTS.Variable (show (serializeRecords x))] | x <- S.toList s]
+            insertT m = insertFreshL $ [LTS.Simple name,
+                                        LTS.Set ss,
+                                        LTS.Variable (show (serializeRecords m)),
+                                        LTS.Simple "true"] 
+            insertF = [LTS.Action (insertFreshL $ [LTS.Simple name,
+                                                   LTS.Set ss,
+                                                   LTS.Set fs,
+                                                   LTS.Simple "false"])
+                        (stateLookup s)] 
+            actionT m = LTS.Action (insertT m) (stateLookup (s `S.union` (S.singleton m)))
+            actionF = if S.null s then [] else insertF
+
+    makeBody :: [S.Set Term] -> [Int] -> [(String, (Maybe String, LTS.Body))]
+    makeBody [] _ = []
+    makeBody (x:xs) ns = (stateLookup' x, (Nothing, LTS.Body (oneState x ns))) : makeBody xs ns
+    
+    body = M.fromList $ makeBody entries range
+
+    alphabet =
+      [ insertFreshL
+        [ LTS.Simple name
+        , LTS.Variable (show n)
+        , LTS.Variable (show (serializeRecords m))
+        , LTS.Simple r
+        ]
+      | n <- range
+      , m <- S.toList records
+      , r <- ["true", "false"]
+      ]
+
+numInstance :: String -> M.Map Agent [LTS.Body] -> Int 
+numInstance name procs = 
+  case M.lookup (mkAgent name) procs of
+    Just l -> length l
+    Nothing -> error $ "Making storage for undeclared agent" ++ name
+
+storeAlphabet :: Agent -> M.Map String (S.Set Term) -> S.Set Term -> Int -> [LTS.Label]
+storeAlphabet (Agent agentName) nameToRecords allowed n =
+  case M.lookup agentName nameToRecords of
+    Just records ->
+      let name = map toLower agentName
+       in [ insertFreshL
+            [ LTS.Simple name
+            , LTS.Variable (show n)
+            , LTS.Variable (show (S.findIndex m allowed))
+            , LTS.Simple result
+            ]
+          | m <- S.toList records
+          , result <- ["true", "false"]
+          ]
+    Nothing -> []
 
 compileWith :: Options -> System () -> IO ()
 compileWith opts@Options{..} sys =
   let Program {..}    = runSystem opts sys
-      compiledAgents  = M.mapWithKey (compileAgent $ M.keys pQueries) pProcs
+      compiledAgents  = M.mapWithKey (compileAgent pStore pAllowed $ M.keys pQueries) pProcs
       compiledQueries = M.mapWithKey compileQuery pQueries
       doOutput h = do
         hPutStrLn h "// Ranges"
@@ -949,7 +1083,11 @@ compileWith opts@Options{..} sys =
           hPrint h $ pretty def
         hPutStrLn h "// Attacker"
         hPrint h $ pretty $ attacker opts pPublic pAllowed pKnowledgeSize
-        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ "Attacker" : map (LTS.name . fst) (M.elems compiledAgents)
+        hPutStrLn h "// Storages"
+        forM_ (M.toList pStore) (\(name, records)-> hPrint h $ pretty $ makeStore pAllowed records name (numInstance name pProcs)) 
+        let storesNames = map ("Store_" ++) (M.keys pStore)
+        let agentsNames = map (LTS.name . fst) (M.elems compiledAgents)
+        hPrint h $ pretty $ LTS.Parallel "System" $ LTS.Primitive $ ("Attacker" : agentsNames) ++ storesNames
         hPutStrLn h "// Properties"
         forM_ (M.assocs compiledQueries) $ \(i, q) -> do
           let name = "Query_" ++ i
