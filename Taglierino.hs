@@ -87,8 +87,6 @@ module Taglierino (
   -- ** Correspondence queries
   , EventId
   , events
-  , Query(..)
-  , query
   , injective
   , nonInjective
 
@@ -681,10 +679,15 @@ runProc (Proc f) psAllowed psEvents psStore psAgent psThread psOptions =
   in res
 
 -- | Type of correspondence query to produce.
-data Query = NonInjective
-           -- ^ Each 'end' event can match multiple 'begin' events
-           | Injective
-           -- ^ Each 'end' event must match exactly one 'begin'
+data Property = NonInjective
+              -- ^ Each 'end' event can match multiple 'begin' events
+              | Injective
+              -- ^ Each 'end' event must match exactly one 'begin'
+  deriving (Eq, Ord)
+
+data Query = Query { qBegin :: Agent
+                   , qEnd   :: Agent
+                   , qProp  :: Property }
   deriving (Eq, Ord)
 
 -- | Internal compiler state
@@ -774,11 +777,21 @@ query id q = do
   SystemState {..} <- get
   put $ SystemState {sQueries = M.insert id q sQueries, ..}
 
-nonInjective :: EventId -> System ()
-nonInjective = flip query NonInjective
+-- | Declare a non-injective query
+nonInjective :: EventId -- ^ The identifier of the event
+             -> Agent   -- ^ The agent that triggers begin
+             -> Agent   -- ^ The agent that triggers end
+             -> System ()
+nonInjective id qBegin qEnd =
+  query id Query{ qProp = NonInjective, .. }
 
-injective :: EventId -> System ()
-injective = flip query Injective
+-- | Declare an injective query
+injective :: EventId -- ^ The identifier of the event
+          -> Agent   -- ^ The agent that triggers begin
+          -> Agent   -- ^ The agent that triggers end
+          -> System ()
+injective id qBegin qEnd =
+  query id Query{ qProp = Injective, .. }
 
 -- | Allow all terms in the list to be exchanged in the network.
 allow :: [Term] -> System ()
@@ -1198,15 +1211,20 @@ compileAgent stores allowed queries a bodies =
   in (compose, threads)
 
 -- | Compile a query to an automaton
-compileQuery :: EventId -> Query -> LTS.Process
-compileQuery id q =
-  let begin  = LTS.Label [ LTS.Simple "begin"
+compileQuery :: Map Agent Int -> EventId -> Query -> LTS.Process
+compileQuery nSessions id Query{..} =
+  let beginRange = LTS.Range 0 $ nSessions M.! qBegin - 1
+      endRange   = LTS.Range 0 $ nSessions M.! qEnd   - 1
+
+      begin  = LTS.Label [ LTS.Simple "begin"
                          , LTS.Simple id
-                         , LTS.Anon "HONEST"
+                         , agentLabel qBegin
+                         , beginRange
                          , LTS.Variable "E" ]
       end    = LTS.Label [ LTS.Simple "end"
                          , LTS.Simple id
-                         , LTS.Anon "HONEST"
+                         , agentLabel qEnd
+                         , endRange
                          , LTS.Variable "E" ]
       go l s = LTS.Action l $ LTS.Name $ LTS.Id s
 
@@ -1222,15 +1240,15 @@ compileQuery id q =
                 , pParam = Just "E"
                 , pProperty = True
                 , pBody = LTS.Body [go begin "Q1"]
-                , pDefs = defs q
+                , pDefs = defs qProp
                 , pAlphabet = [begin, end] }
 
 -- | Range containing all the honest agents
-honestRange :: [(Agent, Int)] -> Doc ann
+honestRange :: Map Agent Int -> Doc ann
 honestRange agents =
   braces $ cat $ punctuate comma
   $ [pretty (agentLabel a) <> dot <> brackets (pretty $ "0.." ++ show (i-1))
-    |(a, i) <- agents]
+    |(a, i) <- M.assocs agents]
 
 -- | Generate an automaton that implements the local storage for an agent
 makeStore :: Set Term -- ^ Allowed messages in the network
@@ -1351,8 +1369,9 @@ compileWith :: Options   -- ^ Compilation options
             -> IO ()
 compileWith opts@Options{..} sys =
   let Program {..}    = runSystem opts sys
+      nSessions       = M.map length pProcs
       compiledAgents  = M.mapWithKey (compileAgent pStore pAllowed $ M.keys pQueries) pProcs
-      compiledQueries = M.mapWithKey compileQuery pQueries
+      compiledQueries = M.mapWithKey (compileQuery nSessions) pQueries
       doOutput h = do
         hPutStrLn h "// Ranges"
         if oVerboseMessages then do
@@ -1378,7 +1397,7 @@ compileWith opts@Options{..} sys =
               hPrint h $ pretty i <+> align (pretty m)
             hPutStrLn h "*/"
         hPutStr h $ "set HONEST = "
-        hPrint h $ honestRange [(a, length ps) | (a, ps) <- M.assocs pProcs]
+        hPrint h $ honestRange nSessions
         hPutStrLn h "// Honest agents"
         forM_ compiledAgents $ \(def, threads) -> do
           forM_ threads (hPrint h . pretty)
