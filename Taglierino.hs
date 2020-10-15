@@ -356,6 +356,8 @@ data ProcRState = ProcRState { psAllowed :: S.Set Term
                              -- ^ Allowed terms in the network
                              , psEvents  :: S.Set Term
                              -- ^ Allowed events in the network
+                             , psStore :: S.Set Term
+                             -- ^ Terms that can be stored by the agent
                              , psAgent   :: Agent
                              -- ^ The name of the agent
                              , psThread  :: Int
@@ -518,7 +520,7 @@ insertFresh :: Term -> Proc Bool
 insertFresh r = do
   ProcRState{..} <- ask
   case S.lookupIndex r psAllowed of
-    Just mi -> 
+    Just mi | S.member r psStore ->
       Proc $ ContT $ \k -> do
         -- Save the state of the agent so that each invokation of the continuation
         -- uses the same initial state.
@@ -531,10 +533,10 @@ insertFresh r = do
                   labelOfTerm psOptions r mi ++ [LTS.Simple mm]
           return $ LTS.Action l body
         return $ LTS.Body actions
-    Nothing -> fail $ show $ pretty "Not allowed to insert fresh"
-               <+> pretty r
-               <+> pretty " in "
-               <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
+    _ -> fail $ show $ pretty "Not allowed to insert fresh"
+         <+> pretty r
+         <+> pretty " in "
+         <+> pretty (LTS.Simple (agentName psAgent)) <+> pretty "'s storage"
 
 -- | Encrypt a term with an asymmetric encryption key.  If encryption fails, an
 -- opaque, useless term is returned.
@@ -666,11 +668,12 @@ untup m = fail $ show $ pretty "Not a tuple:" <+> pretty m
 runProc :: Proc ()    -- ^ Process to run
         -> S.Set Term -- ^ Allowed message terms
         -> S.Set Term -- ^ Allowed event terms
+        -> S.Set Term -- ^ Terms that the agent can store
         -> Agent      -- ^ Agent identifier
         -> Int        -- ^ Thread identifier
         -> Options    -- ^ Compilation options
         -> LTS.Body
-runProc (Proc f) psAllowed psEvents psAgent psThread psOptions =
+runProc (Proc f) psAllowed psEvents psStore psAgent psThread psOptions =
   let stop = return $ LTS.Name $ LTS.STOP Nothing
       rst = ProcRState{..}
       wst = ProcState 0 0 0 0 0
@@ -852,7 +855,9 @@ runSystem opts (System f) =
                                  , sProcs   = M.empty
                                  , sQueries = M.empty }
       ((), SystemState {..}) = runState f initialState
-      run a id p = runProc p sAllowed sEvents a id opts
+      run a id p =
+        let psStore = M.findWithDefault S.empty a sStore
+        in runProc p sAllowed sEvents psStore a id opts
       procs = M.mapWithKey (\a ps -> zipWith (run a) [0 ..] $ toList ps) sProcs
   in Program sEvents sAllowed sPublic sStore sKnowledgeSize sQueries procs
 
