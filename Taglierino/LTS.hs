@@ -1,4 +1,11 @@
 {-# LANGUAGE DeriveFunctor #-}
+
+{-|
+
+This module defines the syntax of LTSA automata.
+
+-}
+
 module Taglierino.LTS where
 
 import Data.Text.Prettyprint.Doc

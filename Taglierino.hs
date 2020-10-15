@@ -242,10 +242,10 @@ labelOfTerm' t = go t
 
 -- | Output a term as an LTSA label.  The options control whether the term index
 -- is used (cf. 'oVerboseMessages') or not.
-labelOfTerm :: Options -> -- ^ Compilation options
-               Term    -> -- ^ Term to serialize
-               Int     -> -- ^ Term index
-               [LTS.LabelPart]
+labelOfTerm :: Options -- ^ Compilation options
+            -> Term    -- ^ Term to serialize
+            -> Int     -- ^ Term index
+            -> [LTS.LabelPart]
 labelOfTerm opts t ti
   | oVerboseMessages opts = labelOfTerm' t
   | oPrintMessages opts   = [LTS.Int $ LTS.Const ti $ Just $ show $ pretty t]
@@ -466,9 +466,9 @@ beginL e args =
 
 -- | Emit a begin event if it belongs to the set of allowed events, otherwise
 -- fails.
-begin :: EventId -> -- ^ Name of the event
-         Term    -> -- ^ Data item associated with the event
-         Proc ()
+begin :: EventId -- ^ Name of the event
+      -> Term    -- ^ Data item associated with the event
+      -> Proc ()
 begin e m = do
   ProcRState{..} <- ask
   case S.lookupIndex m psEvents of
@@ -483,9 +483,9 @@ endL e args =
 
 -- | Emit an end event if it belongs to the set of allowed events, otherwise
 -- fails.  (cf. 'query')
-end :: EventId -> -- ^ Name of the event
-       Term    -> -- ^ Data item associated with the event
-       Proc ()
+end :: EventId -- ^ Name of the event
+    -> Term    -- ^ Data item associated with the event
+    -> Proc ()
 end e m = do
   ProcRState{..} <- ask
   case S.lookupIndex m psEvents of
@@ -544,9 +544,9 @@ insertFresh r = do
 
 -- | Encrypt a term with an asymmetric encryption key.  If encryption fails, an
 -- opaque, useless term is returned.
-aenc :: Term -> -- ^ Encryption key
-        Term -> -- ^ Term to be encrypted
-        Term
+aenc :: Term -- ^ Encryption key
+     -> Term -- ^ Term to be encrypted
+     -> Term
 aenc (AKey k Public) m = AEnc k m
 aenc _ _ = Garbage
 
@@ -559,9 +559,9 @@ checkSignFail m1 m2 =
   fail $ show $ pretty "check signature failed:" <+> pretty m1 <+> pretty m2
 
 -- | Attempt to decrypt a term with an asymmetric decryption key.
-adec :: Term -> -- ^ Decryption key
-        Term -> -- ^ Encrypted message
-        Proc Term
+adec :: Term -- ^ Decryption key
+     -> Term -- ^ Encrypted message
+     -> Proc Term
 adec m1@(AKey k1 Private) m2@(AEnc k2 m) =
   if k1 == k2 then return m
   else decryptFail m1 m2
@@ -569,16 +569,16 @@ adec m1 m2 = decryptFail m1 m2
 
 -- | Encrypt a message with a symmetric key.  If encryption fails, an opaque,
 -- useless term is returned.
-senc :: Term -> -- ^ Key
-        Term -> -- ^ Message to be encrypted
-        Term
+senc :: Term -- ^ Key
+     -> Term -- ^ Message to be encrypted
+     -> Term
 senc (SKey k) m = SEnc k m
 senc _ _ = Garbage
 
 -- | Decrypt a message with a symmetric key.
-sdec :: Term -> -- ^ Key
-        Term -> -- ^ Encrypted message
-        Proc Term
+sdec :: Term -- ^ Key
+     -> Term -- ^ Encrypted message
+     -> Proc Term
 sdec m1@(SKey k1) m2@(SEnc k2 m) =
   if k1 == k2 then return m
   else decryptFail m1 m2
@@ -586,9 +586,9 @@ sdec m1 m2 = decryptFail m1 m2
 
 -- | Sign a message.  If the signature fails, an opaque, useless term is
 -- returned.
-sign :: Term -> -- ^ Signature key
-        Term -> -- ^ Term to sign
-        Term
+sign :: Term -- ^ Signature key
+     -> Term -- ^ Term to sign
+     -> Term
 sign (SigKey k Private) m = Sign k m
 sign _ _ = Garbage
 
@@ -600,18 +600,18 @@ pkey (AKey k Private)   = AKey k Public
 pkey m = error $ "Not a private key: " ++ show (pretty m)
 
 -- | Check a digital signature using a verification key.
-checkSig :: Term -> -- ^ Verification key
-            Term -> -- ^ Signature
-            Term -> -- ^ Term to check
-            Proc Bool
+checkSig :: Term -- ^ Verification key
+         -> Term -- ^ Signature
+         -> Term -- ^ Term to check
+         -> Proc Bool
 checkSig (SigKey k1 Public) (Sign k2 m2) m3 =
   return (k1 == k2 && m2 == m3)
 checkSig _ _ _ = return False
 
 -- | Extract the signed term from a digital signature.
-checkSign :: Term -> -- ^ Verification key
-             Term -> -- ^ Signed message
-             Proc Term
+checkSign :: Term -- ^ Verification key
+          -> Term -- ^ Signed message
+          -> Proc Term
 checkSign m1@(SigKey k1 Public) m2@(Sign k2 m) =
   if k1 == k2 then return m
   else checkSignFail m1 m2 
@@ -689,13 +689,13 @@ untup (Tup ms) = return ms
 untup m = fail $ show $ pretty "Not a tuple:" <+> pretty m
 
 -- | Run a process to build an automaton, given suitable arguments.
-runProc :: Proc ()    -> -- ^ Process to run
-           S.Set Term -> -- ^ Allowed message terms
-           S.Set Term -> -- ^ Allowed event terms
-           Agent      -> -- ^ Agent identifier
-           Int        -> -- ^ Thread identifier
-           Options    -> -- ^ Compilation options
-           LTS.Body
+runProc :: Proc ()    -- ^ Process to run
+        -> S.Set Term -- ^ Allowed message terms
+        -> S.Set Term -- ^ Allowed event terms
+        -> Agent      -- ^ Agent identifier
+        -> Int        -- ^ Thread identifier
+        -> Options    -- ^ Compilation options
+        -> LTS.Body
 runProc (Proc f) psAllowed psEvents psAgent psThread psOptions =
   let stop = return $ LTS.Name $ LTS.STOP Nothing
       rst = ProcRState{..}
@@ -941,10 +941,10 @@ kmember m Knowledge{..}
 -- search.  Used for minimizing the knowledge in the presence of Diffie-Hellman
 -- terms.
 
-factorMultiSet :: Ord a =>
-                  [MS.MultiSet a] -> -- ^ Allowed factors
-                  MS.MultiSet a   -> -- ^ Multiset to be factored
-                  Maybe [Int]        -- ^ Coefficients for each multiset
+factorMultiSet :: Ord a
+               => [MS.MultiSet a] -- ^ Allowed factors
+               -> MS.MultiSet a   -- ^ Multiset to be factored
+               -> Maybe [Int]        -- ^ Coefficients for each multiset
 factorMultiSet xs y = go xs y
   where go [] y
           | MS.null y = Just []
@@ -1071,11 +1071,11 @@ knowledgeOfSet ms =
 type AttackerBody = M.Map Knowledge [(Term, Knowledge)]
 
 -- | Generate the attacker automaton
-attacker :: Options  -> -- ^ Compilation options
-            Set Term -> -- ^ Public terms
-            Set Term -> -- ^ Allowed message terms
-            Int      -> -- ^ Maximum size of attacker knowledge
-            LTS.Process
+attacker :: Options  -- ^ Compilation options
+         -> Set Term -- ^ Public terms
+         -> Set Term -- ^ Allowed message terms
+         -> Int      -- ^ Maximum size of attacker knowledge
+         -> LTS.Process
 attacker opts@Options{..} public allowed k =
   LTS.Process "Attacker" Nothing False initialState body alphabet
   where (initialState, body) = serializeBody
@@ -1178,19 +1178,19 @@ threadName :: Agent -> Int -> String
 threadName a id = "Def_Agent_" ++ agentName a ++ "_" ++ show id
 
 -- | Package a thread's automaton body as a complete automaton.
-compileThread :: M.Map Agent (S.Set Term) ->
+compileThread :: M.Map Agent (S.Set Term)
                  -- Terms the agent can store
-                 S.Set Term ->
+              -> S.Set Term
                  -- Allowed message terms
-                 [EventId] ->
+              -> [EventId]
                  -- Events the agent can trigger
-                 Agent ->
+              -> Agent
                  -- Agent identifier
-                 Int ->
+              -> Int
                  -- Thread identifier
-                 LTS.Body ->
+              -> LTS.Body
                  -- Thread body
-                 LTS.Process
+              -> LTS.Process
 compileThread stores allowed queries a id body =
   LTS.Process { pName = threadName a id
               , pParam = Nothing
@@ -1208,17 +1208,17 @@ compileThread stores allowed queries a id body =
               }
 
 -- | Package the bodies of an agent's thread as a complete automaton.
-compileAgent :: M.Map Agent (S.Set Term) ->
+compileAgent :: M.Map Agent (S.Set Term)
                 -- Terms the agent can store
-                S.Set Term ->
+             -> S.Set Term
                 -- Allowed Message Terms
-                [EventId] ->
+             -> [EventId]
                 -- Events the agent can trigger
-                Agent ->
+             -> Agent
                 -- Agent identifier
-                [LTS.Body] ->
+             -> [LTS.Body]
                 -- Agent thread bodies
-                (LTS.Parallel, [LTS.Process])
+             -> (LTS.Parallel, [LTS.Process])
 compileAgent stores allowed queries a bodies =
   let doThread = compileThread stores allowed queries a
       threads  = zipWith doThread [0 ..] bodies
@@ -1262,11 +1262,11 @@ honestRange agents =
     |(a, i) <- agents]
 
 -- | Generate an automaton that implements the local storage for an agent
-makeStore :: Set Term -> -- ^ Allowed messages in the network
-             Set Term -> -- ^ Terms that can be stored by the agent
-             Agent    -> -- ^ Agent identifier
-             Int      -> -- ^ Number of threads the agent runs
-             LTS.Process
+makeStore :: Set Term -- ^ Allowed messages in the network
+          -> Set Term -- ^ Terms that can be stored by the agent
+          -> Agent    -- ^ Agent identifier
+          -> Int      -- ^ Number of threads the agent runs
+          -> LTS.Process
 makeStore allowed records a sessions =
   LTS.Process ("Store_" ++ agentName a) Nothing False initialState body alphabet
   where 
@@ -1350,15 +1350,15 @@ numInstance a procs =
     Nothing -> error $ "Making storage for undeclared agent" ++ agentName a
 
 -- | Compute the alphabet used by the storage automaton.
-storeAlphabet :: Agent ->
+storeAlphabet :: Agent
                  -- ^ Agent identifier
-                 M.Map Agent (S.Set Term) ->
+              -> M.Map Agent (S.Set Term)
                  -- ^ Terms that each agent can store
-                 S.Set Term ->
+              -> S.Set Term
                  -- ^ Allowed messages in the network
-                 Int ->
+              -> Int
                  -- ^ Thread identifier
-                 [LTS.Label]
+              -> [LTS.Label]
 storeAlphabet a nameToRecords allowed n =
   case M.lookup a nameToRecords of
     Just records ->
@@ -1375,9 +1375,9 @@ storeAlphabet a nameToRecords allowed n =
     Nothing -> []
 
 -- | Compile a model given some options
-compileWith :: Options   -> -- ^ Compilation options
-               System () -> -- ^ Model description
-               IO ()
+compileWith :: Options   -- ^ Compilation options
+            -> System () -- ^ Model description
+            -> IO ()
 compileWith opts@Options{..} sys =
   let Program {..}    = runSystem opts sys
       compiledAgents  = M.mapWithKey (compileAgent pStore pAllowed $ M.keys pQueries) pProcs
