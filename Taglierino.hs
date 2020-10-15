@@ -68,6 +68,9 @@ module Taglierino (
   -- ** Diffie-Hellman
   , expBase, expo
 
+  -- * Control flow
+  , loop
+
   -- * Correspondence events
   , begin, end
 
@@ -508,6 +511,12 @@ receive = do
               ++ labelOfTerm psOptions m mi
       return $ LTS.Action l body
     return $ LTS.Body actions
+
+-- | Start executing from the beginning of the process.
+loop :: Proc ()
+loop = Proc $ ContT $ \k -> do
+  k ()
+  return  $ LTS.Name $ LTS.Id "START"
 
 insertFreshL :: [LTS.LabelPart] -> LTS.Label
 insertFreshL args = LTS.Label $ [LTS.Simple "insertfresh"] ++ args
