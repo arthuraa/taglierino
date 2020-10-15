@@ -1183,8 +1183,8 @@ compileThread stores allowed queries a id body =
   LTS.Process { pName = threadName a id
               , pParam = Nothing
               , pProperty = False
-              , pBody = body
-              , pDefs = M.empty
+              , pBody = LTS.Name (LTS.Id "START")
+              , pDefs = M.singleton "START" (Nothing, body)
               , pAlphabet =
                 [ sendL [agentLabel a, LTS.const id, LTS.Anon "TERM"]
                 , receiveL [agentLabel a, LTS.const id, LTS.Anon "TERM"] ] ++
